@@ -3,7 +3,7 @@ from calculadora import sumar, restar, multiplicar, dividir
 
 
 def test_sumar():
-    assert sumar(2, 3) == 7
+    assert sumar(2, 3) == 5
     assert sumar(-5, 3) == -2
 
 
