@@ -2,7 +2,7 @@ version: "2"
 
 agents:
   root:
-    model: google/gemini-2.5-flash
+    model: google/gemini-3.8-flash
     description: "Agente especializado en analizar código Python"
     instruction: |
       Eres un ingeniero de software especializado en Python.
