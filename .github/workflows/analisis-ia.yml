@@ -1,0 +1,32 @@
+name: Analisis de codigo con Docker Agent
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analizar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Ejecutar Docker Agent
+        id: agente
+        uses: docker/docker-agent-action@v2.0.9
+        with:
+          agent: ./agents/analizador.yaml
+          prompt: "Analiza el archivo calculadora.py y genera un reporte de errores y recomendaciones."
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+          timeout: 300
+          debug: true
+          yolo: false
+
+      - name: Mostrar resultados
+        if: always()
+        run: |
+          echo "Tiempo de ejecucion: ${{ steps.agente.outputs.execution-time }} segundos"
+          echo "Codigo de salida: ${{ steps.agente.outputs.exit-code }}"
