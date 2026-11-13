@@ -1,0 +1,51 @@
+name: Contenedor web - GHCR
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/bryan6h9/calculadora-idsm42
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir y verificar por HTTP
+        run: |
+          docker build -t calculadora:ci .
+          docker run --rm -d --name calculadora -p 127.0.0.1:8080:80 calculadora:ci
+          trap 'docker stop calculadora' EXIT
+          curl --fail --silent --show-error --retry 10 --retry-connrefused http://127.0.0.1:8080/ -o servido.html
+          cmp index.html servido.html
+
+  publicar:
+    if: github.ref == 'refs/heads/main'
+    needs: validar
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-main
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publicar y verificar la imagen descargada
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+          docker image rm "$IMAGE:$GITHUB_SHA" "$IMAGE:latest"
+          docker pull "$IMAGE:$GITHUB_SHA"
+          docker run --rm -d --name calculadora -p 127.0.0.1:8080:80 "$IMAGE:$GITHUB_SHA"
+          trap 'docker stop calculadora' EXIT
+          curl --fail --silent --show-error --retry 10 --retry-connrefused http://127.0.0.1:8080/ -o servido.html
+          cmp index.html servido.html
