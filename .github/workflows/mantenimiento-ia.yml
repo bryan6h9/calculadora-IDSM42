@@ -1,0 +1,195 @@
+name: Analizar, corregir y publicar con Gemini
+
+on:
+  workflow_dispatch:
+    inputs:
+      archivo:
+        description: Archivo de la calculadora que Gemini debe editar
+        type: choice
+        required: true
+        options: [index.html, calculadora.py, app.py]
+      simulacion:
+        description: Generar y probar la corrección sin abrir un PR
+        type: boolean
+        default: false
+
+concurrency:
+  group: mantenimiento-gemini
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  generar:
+    outputs:
+      propuesta: ${{ steps.propuesta.outputs.existe }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      ARCHIVO: ${{ inputs.archivo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preparar solicitud
+        run: |
+          case "$ARCHIVO" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
+          {
+            printf 'Archivo editable: %s\n\nEjecución de la calculadora:\n' "$ARCHIVO"
+            printf '1\n2\n3\n4\n10\n0\n5\n' | python3 app.py
+            for archivo in "$ARCHIVO" test/test_calculadora.py test/test_app.py; do
+              printf '\nArchivo %s:\n' "$archivo"
+              cat "$archivo"
+            done
+          } > solicitud.txt
+      - name: Pedir corrección a Gemini
+        id: agente
+        uses: docker/docker-agent-action@v2.1.0
+        with:
+          agent: ./agents/mantenimiento.yaml
+          prompt: Analiza la ejecución y los archivos adjuntos y propone una mejora concreta.
+          add-prompt-files: solicitud.txt
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+          timeout: 120
+          retry-on-timeout: 1
+          total-timeout: 300
+          yolo: false
+          skip-summary: true
+      - name: Extraer propuesta
+        env:
+          EXIT_CODE: ${{ steps.agente.outputs.exit-code }}
+          OUTPUT_FILE: ${{ steps.agente.outputs.output-file }}
+          SECRETS_DETECTED: ${{ steps.agente.outputs.secrets-detected }}
+        run: |
+          test "$EXIT_CODE" = 0
+          test "$SECRETS_DETECTED" = false
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          response = Path(os.environ["OUTPUT_FILE"]).read_text()
+          response = re.split(r"(?m)^========== RETRY ATTEMPT .* ==========$", response)[-1]
+          if response.strip() == "SIN_CAMBIOS":
+              with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+                  summary.write("Gemini no encontró una mejora concreta.\n")
+              raise SystemExit(0)
+          match = re.fullmatch(r"(.+?)\n```[\w+-]*\r?\n(.+?)\r?\n```", response.strip(), re.DOTALL)
+          if not match:
+              raise SystemExit("Formato inválido: se esperaba un diagnóstico y un archivo completo.")
+          source = Path(os.environ["ARCHIVO"])
+          proposal = match[2] + "\n"
+          if source.read_text() == proposal:
+              raise SystemExit("Gemini no propuso ningún cambio.")
+          Path("propuesta.txt").write_text(proposal)
+          Path("diagnostico.txt").write_text(match[1])
+          PY
+      - name: Mostrar el diagnóstico y el cambio exacto
+        id: propuesta
+        run: |
+          if [[ ! -f propuesta.txt ]]; then exit 0; fi
+          echo 'existe=true' >> "$GITHUB_OUTPUT"
+          {
+            echo '## Diagnóstico de Gemini'
+            echo
+            sed 's/^/    /' diagnostico.txt
+            echo
+            echo '## Cambio propuesto'
+            echo
+            diff -u --label "Antes: $ARCHIVO" --label "Propuesta: $ARCHIVO" "$ARCHIVO" propuesta.txt |
+              sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: steps.propuesta.outputs.existe == 'true'
+        with:
+          name: propuesta-gemini
+          path: propuesta.txt
+
+  validar:
+    if: needs.generar.outputs.propuesta == 'true'
+    needs: generar
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      ARCHIVO: ${{ inputs.archivo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: propuesta-gemini
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Probar el cambio en un contenedor sin red
+        run: |
+          cp propuesta.txt "$ARCHIVO"
+          docker build -t calculadora:propuesta .
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --entrypoint /bin/cat calculadora:propuesta /usr/share/nginx/html/index.html > servido.html
+          cmp index.html servido.html
+          mkdir prueba
+          cp app.py calculadora.py requirements.txt prueba/
+          cp -R test prueba/
+          docker build -t calculadora:pytest -f - prueba <<'DOCKERFILE'
+          FROM python:3.10-slim
+          WORKDIR /proyecto
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir pytest -r requirements.txt
+          COPY . .
+          USER 65534:65534
+          CMD ["python", "-B", "-m", "pytest", "-p", "no:cacheprovider", "-q"]
+          DOCKERFILE
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=32m --memory 256m --pids-limit 64 calculadora:pytest
+
+  publicar:
+    if: '!inputs.simulacion'
+    environment: aprobar-mantenimiento
+    needs: validar
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      ARCHIVO: ${{ inputs.archivo }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: propuesta-gemini
+      - name: Abrir el PR para decisión humana
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$ARCHIVO" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA" || {
+            echo 'main cambió desde la prueba. Ejecuta el análisis de nuevo.' >&2
+            exit 1
+          }
+          rama="gemini/correccion-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git switch -c "$rama"
+          cp propuesta.txt "$ARCHIVO"
+          git add -- "$ARCHIVO"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Propuesta de Gemini para $ARCHIVO"
+          git push origin "$rama"
+          {
+            printf 'Propuesta de Gemini para %s. Pasaron pytest y la comprobación del empaquetado Docker.\n\n' "$ARCHIVO"
+            printf '\nEjecución: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > cuerpo.md
+          pr=$(gh pr create --base main --head "$rama" --title "Propuesta de Gemini para $ARCHIVO" --body-file cuerpo.md)
+          echo "PR aprobado en esta ejecución: $pr" >> "$GITHUB_STEP_SUMMARY"
+          gh pr merge "$pr" --merge --match-head-commit "$(git rev-parse HEAD)"
+          merge_sha=$(gh pr view "$pr" --json mergeCommit --jq .mergeCommit.oid)
+          test -n "$merge_sha"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$merge_sha"
+          for workflow in deploy.yml contenedor.yml main_practica-azure.yml; do
+            resultado=$(gh workflow run "$workflow" --ref main)
+            printf '\n- %s %s\n' "$workflow" "$resultado" >> "$GITHUB_STEP_SUMMARY"
+          done
