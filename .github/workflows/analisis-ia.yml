@@ -2,31 +2,87 @@ name: Analisis de codigo con Docker Agent
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
+concurrency:
+  group: analisis-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analizar:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - name: Descargar repositorio
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preparar código para revisión
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ -n "$PR" ]]; then
+            gh pr diff "$PR" > revision.txt
+          else
+            cp calculadora.py revision.txt
+          fi
+          head -c 60000 revision.txt > entrada.txt
 
-      - name: Ejecutar Docker Agent
+      - name: Revisar con Gemini
         id: agente
-        uses: docker/docker-agent-action@v2.0.9
+        uses: docker/docker-agent-action@v2.1.0
         with:
           agent: ./agents/analizador.yaml
-          prompt: "Analiza el archivo calculadora.py y genera un reporte de errores y recomendaciones."
+          prompt: "Revisa el código adjunto y devuelve únicamente tus comentarios de revisión."
+          add-prompt-files: entrada.txt
           google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-          timeout: 300
-          debug: true
+          timeout: 90
           yolo: false
 
-      - name: Mostrar resultados
-        if: always()
+      - name: Validar y guardar respuesta
+        env:
+          EXIT_CODE: ${{ steps.agente.outputs.exit-code }}
+          OUTPUT_FILE: ${{ steps.agente.outputs.output-file }}
+          SECRETS_DETECTED: ${{ steps.agente.outputs.secrets-detected }}
         run: |
-          echo "Tiempo de ejecucion: ${{ steps.agente.outputs.execution-time }} segundos"
-          echo "Codigo de salida: ${{ steps.agente.outputs.exit-code }}"
+          test "$EXIT_CODE" = 0
+          test "$SECRETS_DETECTED" = false
+          test -s "$OUTPUT_FILE"
+          head -c 30000 "$OUTPUT_FILE" > revision.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: revision-gemini
+          path: revision.md
+
+  comentar:
+    if: github.event_name == 'pull_request'
+    needs: analizar
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: revision-gemini
+      - name: Publicar comentario en el PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(gh pr view "$PR" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA"
+          {
+            printf '### Revisión de Gemini\n\nCommit: %s\n\n' "$HEAD_SHA"
+            sed -E 's/@([a-zA-Z0-9-]+)/@​\1/g' revision.md
+          } > comentario.md
+          gh pr comment "$PR" --body-file comentario.md

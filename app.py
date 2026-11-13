@@ -1,4 +1,4 @@
-from calculator import sumar, restar, multiplicar, dividir
+from calculadora import sumar, restar, multiplicar, dividir
 
 
 def main():
