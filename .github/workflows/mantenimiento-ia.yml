@@ -30,6 +30,17 @@ jobs:
     env:
       ARCHIVO: ${{ inputs.archivo }}
     steps:
+      - name: Comprobar que la ejecución usa main actual
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [[ "$actual" != "$GITHUB_SHA" ]]; then
+            echo '## Inicia una ejecución nueva' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Usa **Run workflow → main**. **Re-run jobs** conserva el commit original.' >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::El commit de esta ejecución ya no es el actual de main."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -81,6 +92,15 @@ jobs:
               raise SystemExit("Formato inválido: se esperaba un diagnóstico y un archivo completo.")
           source = Path(os.environ["ARCHIVO"])
           proposal = match[2] + "\n"
+          if re.search(r"(?m)^\s*```", proposal):
+              raise SystemExit("Gemini debe devolver un único bloque con el archivo completo.")
+          if source.suffix == ".py":
+              try:
+                  compile(proposal, source.name, "exec")
+              except SyntaxError as error:
+                  raise SystemExit(
+                      f"Propuesta inválida para {source.name}, línea {error.lineno}: {error.msg}"
+                  ) from None
           if source.read_text() == proposal:
               raise SystemExit("Gemini no propuso ningún cambio.")
           Path("propuesta.txt").write_text(proposal)
@@ -169,7 +189,8 @@ jobs:
         run: |
           case "$ARCHIVO" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA" || {
-            echo 'main cambió desde la prueba. Ejecuta el análisis de nuevo.' >&2
+            echo 'main cambió después de validar. Inicia una ejecución nueva con **Run workflow → main**.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'main cambió después de validar. Usa Run workflow desde main.' >&2
             exit 1
           }
           rama="gemini/correccion-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
