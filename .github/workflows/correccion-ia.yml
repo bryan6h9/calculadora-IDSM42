@@ -1,0 +1,155 @@
+name: Proponer corrección con Gemini
+
+on:
+  workflow_dispatch:
+    inputs:
+      archivo:
+        description: Archivo de la calculadora que Gemini debe editar
+        type: choice
+        required: true
+        options: [index.html, calculadora.py, app.py]
+      solicitud:
+        description: Describe el problema y el resultado esperado
+        type: string
+        required: true
+      simulacion:
+        description: Generar y probar la corrección sin abrir un PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  generar:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      ARCHIVO: ${{ inputs.archivo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preparar solicitud
+        env:
+          SOLICITUD: ${{ inputs.solicitud }}
+        run: |
+          case "$ARCHIVO" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
+          test -n "$SOLICITUD"
+          {
+            printf 'Archivo: %s\nSolicitud: %s\n\nContenido original:\n' "$ARCHIVO" "$SOLICITUD"
+            cat "$ARCHIVO"
+          } > solicitud.txt
+      - name: Pedir corrección a Gemini
+        id: agente
+        uses: docker/docker-agent-action@v2.1.0
+        with:
+          agent: ./agents/corrector.yaml
+          prompt: Devuelve la propuesta de mantenimiento indicada en el archivo adjunto.
+          add-prompt-files: solicitud.txt
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+          timeout: 120
+          yolo: false
+          skip-summary: true
+      - name: Extraer propuesta
+        env:
+          EXIT_CODE: ${{ steps.agente.outputs.exit-code }}
+          OUTPUT_FILE: ${{ steps.agente.outputs.output-file }}
+          SECRETS_DETECTED: ${{ steps.agente.outputs.secrets-detected }}
+        run: |
+          test "$EXIT_CODE" = 0
+          test "$SECRETS_DETECTED" = false
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          response = Path(os.environ["OUTPUT_FILE"]).read_text()
+          match = re.fullmatch(r"```[\w+-]*\r?\n(.+?)\r?\n```", response.strip(), re.DOTALL)
+          if not match:
+              raise SystemExit("Gemini no devolvió un archivo completo en un bloque Markdown.")
+          source = Path(os.environ["ARCHIVO"])
+          proposal = match[1] + "\n"
+          if source.read_text() == proposal:
+              raise SystemExit("Gemini no propuso ningún cambio.")
+          Path("propuesta.txt").write_text(proposal)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: propuesta-gemini
+          path: propuesta.txt
+
+  validar:
+    needs: generar
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      ARCHIVO: ${{ inputs.archivo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: propuesta-gemini
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Probar el cambio en un contenedor sin red
+        run: |
+          cp propuesta.txt "$ARCHIVO"
+          docker build -t calculadora:propuesta .
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --entrypoint /bin/cat calculadora:propuesta /usr/share/nginx/html/index.html > servido.html
+          cmp index.html servido.html
+          mkdir prueba
+          cp app.py calculadora.py requirements.txt prueba/
+          cp -R test prueba/
+          docker build -t calculadora:pytest -f - prueba <<'DOCKERFILE'
+          FROM python:3.10-slim
+          WORKDIR /proyecto
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir pytest -r requirements.txt
+          COPY . .
+          USER 65534:65534
+          CMD ["python", "-B", "-m", "pytest", "-p", "no:cacheprovider", "-q"]
+          DOCKERFILE
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=32m --memory 256m --pids-limit 64 calculadora:pytest
+
+  publicar:
+    if: '!inputs.simulacion'
+    needs: validar
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      ARCHIVO: ${{ inputs.archivo }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: propuesta-gemini
+      - name: Abrir el PR para decisión humana
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOLICITUD: ${{ inputs.solicitud }}
+        run: |
+          case "$ARCHIVO" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
+          rama="gemini/correccion-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git switch -c "$rama"
+          cp propuesta.txt "$ARCHIVO"
+          git add -- "$ARCHIVO"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Propuesta de Gemini para $ARCHIVO"
+          git push origin "$rama"
+          {
+            printf 'Propuesta de Gemini para %s. Pasaron pytest y la comprobación del empaquetado Docker.\n\n' "$ARCHIVO"
+            printf 'Solicitud original:\n\n'
+            printf '%s\n' "$SOLICITUD" | sed 's/^/> /'
+            printf '\nEjecución: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > cuerpo.md
+          gh pr create --base main --head "$rama" --title "Propuesta de Gemini para $ARCHIVO" --body-file cuerpo.md
