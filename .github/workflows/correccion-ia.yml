@@ -50,6 +50,8 @@ jobs:
           add-prompt-files: solicitud.txt
           google-api-key: ${{ secrets.GOOGLE_API_KEY }}
           timeout: 120
+          retry-on-timeout: 1
+          total-timeout: 300
           yolo: false
           skip-summary: true
       - name: Extraer propuesta
@@ -66,6 +68,7 @@ jobs:
           from pathlib import Path
 
           response = Path(os.environ["OUTPUT_FILE"]).read_text()
+          response = re.split(r"(?m)^========== RETRY ATTEMPT .* ==========$", response)[-1]
           match = re.fullmatch(r"```[\w+-]*\r?\n(.+?)\r?\n```", response.strip(), re.DOTALL)
           if not match:
               raise SystemExit("Gemini no devolvió un archivo completo en un bloque Markdown.")
