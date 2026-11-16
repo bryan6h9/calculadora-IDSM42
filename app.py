@@ -17,7 +17,7 @@ def main():
             break
 
         if opcion not in ("1", "2", "3", "4"):
-            print("Opción inválida")
+            print("Opción inválida.")
             continue
 
         try:
