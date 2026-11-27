@@ -10,13 +10,20 @@ ALLOWED_FILES = ("index.html", "calculadora.py", "app.py")
 
 def parse(response, filename):
     response = re.split(r"(?m)^========== RETRY ATTEMPT .* ==========$", response)[-1].strip()
-    if response in {"SIN_CAMBIOS", "FUERA_DE_ALCANCE"}:
-        return response, None
-    match = re.fullmatch(r"(?:(.*?)\n)?```([a-zA-Z0-9_-]*)\n(.+?)\n```", response, re.S)
-    languages = ("", "python", "py") if filename.endswith(".py") else ("", "html")
-    if not match or match[2].lower() not in languages or response.count("```") != 2:
+    sentinel = re.fullmatch(r"[*_` ]*(SIN_CAMBIOS|FUERA_DE_ALCANCE)[*_` .]*", response)
+    if sentinel:
+        return sentinel[1], None
+    match = re.search(
+        r"(?m)^[ \t]*```[ \t]*([a-zA-Z0-9_-]*)[ \t]*\n([\s\S]+?)\n[ \t]*```[ \t]*$",
+        response,
+    )
+    languages = ("", "python", "python3", "py") if filename.endswith(".py") else ("", "html")
+    if not match or match[1].lower() not in languages or response.count("```") != 2:
         raise ValueError("Gemini debe devolver un solo bloque con el archivo completo.")
-    diagnosis, _, code = match.groups()
+    diagnosis = "\n\n".join(part for part in (
+        response[:match.start()].strip(), response[match.end():].strip()
+    ) if part)
+    code = match[2]
     proposal = code + "\n"
     if filename.endswith(".py"):
         compile(proposal, filename, "exec")

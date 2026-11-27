@@ -73,3 +73,10 @@ def test_parser_handles_diagnosis_and_rejects_multiple_blocks():
         parse("```python\npass\n```\n```python\npass\n```", "app.py")
     with pytest.raises(SyntaxError):
         parse("```python\nif\n```", "app.py")
+
+
+def test_parser_accepts_diagnosis_after_a_single_block():
+    assert parse(
+        "```python3\nprint(1)\n```\nNota de verificación.", "app.py"
+    ) == ("Nota de verificación.", "print(1)\n")
+    assert parse("**SIN_CAMBIOS**", "app.py") == ("SIN_CAMBIOS", None)
