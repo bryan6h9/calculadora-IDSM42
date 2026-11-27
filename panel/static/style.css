@@ -61,7 +61,7 @@ a:hover { color: #fff; }
 
 h1 {
   margin-block: clamp(2rem, 5vw, 4rem) clamp(1.5rem, 4vw, 3rem);
-  font-size: clamp(2.5rem, 8.4vw, 7rem);
+  font-size: clamp(2.5rem, 6.5vw, 5.25rem);
   line-height: .94;
   letter-spacing: -.075em;
   font-weight: 760;
@@ -69,6 +69,7 @@ h1 {
 }
 
 h1 span { color: var(--accent); }
+.title-break { display: none; }
 
 .navigation { display: flex; gap: .35rem 1.5rem; flex-wrap: wrap; padding-bottom: 1rem; }
 .navigation a { color: #d1dbe9; font-size: .9rem; text-decoration: none; }
@@ -182,6 +183,7 @@ pre {
 
 @media (max-width: 770px) {
   .grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .title-break { display: initial; }
 }
 
 @media (max-width: 420px) {
