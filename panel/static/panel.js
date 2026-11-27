@@ -45,6 +45,13 @@ function report(message, url) {
   if (url) el("notice").append(" ", link("Abrir en GitHub", url));
 }
 
+function statusBadge(value) {
+  const badge = text("span", label(value));
+  badge.className = "status-badge";
+  badge.dataset.status = value || "pending";
+  return badge;
+}
+
 function addButton(parent, title, operation) {
   const button = text("button", title);
   button.addEventListener("click", () => action(button, operation));
@@ -66,24 +73,25 @@ async function refresh() {
       const row = text("li", "");
       const run = runs.find(item => item.workflow_id === workflow.id);
       row.append(link(workflow.name, workflow.html_url),
-        " · " + (run ? label(run.conclusion || run.status) : label(workflow.state)));
+        statusBadge(run ? run.conclusion || run.status : workflow.state));
       return row;
     }));
     renderList("runs", runs.map(run => {
       const row = text("li", "");
-      row.append(link(run.display_title + " #" + run.run_number, run.html_url),
-        " · " + run.head_branch + " · " + label(run.conclusion || run.status) +
-        " · " + new Date(run.created_at).toLocaleString());
+      const details = text("div", "");
+      details.append(link(run.display_title + " #" + run.run_number, run.html_url),
+        text("small", run.head_branch + " · " + new Date(run.created_at).toLocaleString()));
+      row.append(details, statusBadge(run.conclusion || run.status));
       addButton(row, "Ver pasos", () => showRun(run.id));
       return row;
     }));
     renderList("prs", prs.map(pr => {
       const row = text("li", "");
       row.append(link("#" + pr.number + " " + pr.title, pr.html_url),
-        " · " + label(pr.merged_at ? "integrado" : pr.state));
+        statusBadge(pr.merged_at ? "integrado" : pr.state));
       if (pr.state === "open" && pr.head.repo?.full_name === repo.full_name &&
           /^gemini\/correccion-\d+(?:-\d+)?$/.test(pr.head.ref) && pr.base.ref === repo.default_branch) {
-        row.append(" · Espera de decisión · " + pr.head.sha.slice(0, 8));
+        row.append(text("small", "Espera de decisión · " + pr.head.sha.slice(0, 8)));
         for (const [decision, title] of [["merge", "Aprobar merge"], ["rechazar", "Rechazar PR"]]) {
           addButton(row, title, async () => {
             if (!window.confirm(title + " #" + pr.number + " (" + pr.head.sha.slice(0, 8) + ")")) return;
