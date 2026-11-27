@@ -15,14 +15,15 @@ on:
       simulacion:
         description: Generar y probar la corrección sin abrir un PR
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   generar:
-    if: github.ref == 'refs/heads/main'
+    outputs:
+      propuesta: ${{ steps.propuesta.outputs.existe }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
@@ -54,7 +55,8 @@ jobs:
           total-timeout: 300
           yolo: false
           skip-summary: true
-      - name: Extraer propuesta
+      - name: Extraer propuesta y comprobar sintaxis
+        id: propuesta
         env:
           EXIT_CODE: ${{ steps.agente.outputs.exit-code }}
           OUTPUT_FILE: ${{ steps.agente.outputs.output-file }}
@@ -62,28 +64,14 @@ jobs:
         run: |
           test "$EXIT_CODE" = 0
           test "$SECRETS_DETECTED" = false
-          python - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          response = Path(os.environ["OUTPUT_FILE"]).read_text()
-          response = re.split(r"(?m)^========== RETRY ATTEMPT .* ==========$", response)[-1]
-          match = re.fullmatch(r"```[\w+-]*\r?\n(.+?)\r?\n```", response.strip(), re.DOTALL)
-          if not match:
-              raise SystemExit("Gemini no devolvió un archivo completo en un bloque Markdown.")
-          source = Path(os.environ["ARCHIVO"])
-          proposal = match[1] + "\n"
-          if source.read_text() == proposal:
-              raise SystemExit("Gemini no propuso ningún cambio.")
-          Path("propuesta.txt").write_text(proposal)
-          PY
+          python scripts/propuesta.py
       - uses: actions/upload-artifact@v4
         with:
           name: propuesta-gemini
-          path: propuesta.txt
+          path: revision/
 
   validar:
+    if: needs.generar.outputs.propuesta == 'true'
     needs: generar
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -99,16 +87,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Probar el cambio en un contenedor sin red
+      - name: Validar Docker
         run: |
           cp propuesta.txt "$ARCHIVO"
           docker build -t calculadora:propuesta .
-          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
-            --entrypoint /bin/cat calculadora:propuesta /usr/share/nginx/html/index.html > servido.html
+          docker run --rm -d --name calculadora-propuesta -p 127.0.0.1:8080:80 calculadora:propuesta
+          trap 'docker stop calculadora-propuesta' EXIT
+          curl --fail --silent --show-error --retry 10 --retry-all-errors --max-time 5 \
+            http://127.0.0.1:8080/ -o servido.html
           cmp index.html servido.html
+      - name: Ejecutar pytest en un contenedor sin red
+        run: |
           mkdir prueba
           cp app.py calculadora.py requirements.txt prueba/
-          cp -R test prueba/
+          mkdir prueba/test
+          cp test/test_calculadora.py test/test_app.py prueba/test/
           docker build -t calculadora:pytest -f - prueba <<'DOCKERFILE'
           FROM python:3.10-slim
           WORKDIR /proyecto
@@ -122,37 +115,13 @@ jobs:
             --tmpfs /tmp:rw,nosuid,size=32m --memory 256m --pids-limit 64 calculadora:pytest
 
   publicar:
-    if: '!inputs.simulacion'
+    if: ${{ !inputs.simulacion && github.ref == 'refs/heads/main' }}
     needs: validar
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
     permissions:
       contents: write
       pull-requests: write
-    env:
-      ARCHIVO: ${{ inputs.archivo }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: propuesta-gemini
-      - name: Abrir el PR para decisión humana
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOLICITUD: ${{ inputs.solicitud }}
-        run: |
-          case "$ARCHIVO" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
-          rama="gemini/correccion-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          git switch -c "$rama"
-          cp propuesta.txt "$ARCHIVO"
-          git add -- "$ARCHIVO"
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -m "Propuesta de Gemini para $ARCHIVO"
-          git push origin "$rama"
-          {
-            printf 'Propuesta de Gemini para %s. Pasaron pytest y la comprobación del empaquetado Docker.\n\n' "$ARCHIVO"
-            printf 'Solicitud original:\n\n'
-            printf '%s\n' "$SOLICITUD" | sed 's/^/> /'
-            printf '\nEjecución: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-          } > cuerpo.md
-          gh pr create --base main --head "$rama" --title "Propuesta de Gemini para $ARCHIVO" --body-file cuerpo.md
+      actions: write
+    uses: ./.github/workflows/publicar-propuesta.yml
+    with:
+      origen: ${{ fromJSON(github.run_id) }}
+      misma_ejecucion: true

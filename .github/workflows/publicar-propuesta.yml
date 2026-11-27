@@ -1,0 +1,89 @@
+name: Abrir PR de una propuesta validada
+
+on:
+  workflow_call:
+    inputs:
+      origen:
+        type: number
+        required: true
+      misma_ejecucion:
+        type: boolean
+        required: true
+  workflow_dispatch:
+    inputs:
+      origen:
+        description: ID de ejecución de la propuesta validada
+        type: number
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: publicar-propuesta-${{ inputs.origen }}
+
+jobs:
+  publicar:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ORIGEN: ${{ inputs.origen }}
+      MISMA: ${{ inputs.misma_ejecucion }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verificar procedencia de la propuesta
+        run: |
+          [[ "$ORIGEN" =~ ^[0-9]+$ ]]
+          ruta="repos/$GITHUB_REPOSITORY/actions/runs/$ORIGEN"
+          gh api "$ruta" > "$RUNNER_TEMP/run.json"
+          jq -e --arg sha "$GITHUB_SHA" '
+            .head_branch == "main" and .head_sha == $sha and
+            .event == "workflow_dispatch" and
+            (.path == ".github/workflows/correccion-ia.yml" or
+             .path == ".github/workflows/mantenimiento-ia.yml")
+          ' "$RUNNER_TEMP/run.json" > /dev/null
+          if [[ "$MISMA" != true || "$ORIGEN" != "$GITHUB_RUN_ID" ]]; then
+            jq -e '.conclusion == "success"' "$RUNNER_TEMP/run.json" > /dev/null
+          fi
+          gh api --paginate --slurp "$ruta/jobs?filter=latest" |
+            jq -e 'any(.[].jobs[]; .name == "validar" and .conclusion == "success")' > /dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: propuesta-gemini
+          run-id: ${{ inputs.origen }}
+          github-token: ${{ github.token }}
+          path: revision
+      - name: Crear rama y commit
+        id: cambio
+        run: |
+          archivo=$(jq -er '.file' revision/metadata.json)
+          case "$archivo" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
+          test "$(jq -er '.sha' revision/metadata.json)" = "$GITHUB_SHA"
+          if [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]]; then
+            echo "::error::main cambió después de validar. Genera y valida una propuesta nueva."
+            exit 1
+          fi
+          rama="gemini/correccion-$ORIGEN"
+          git switch -c "$rama"
+          cp revision/propuesta.txt "$archivo"
+          git add -- "$archivo"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Propuesta de Gemini para $archivo"
+          echo "rama=$rama" >> "$GITHUB_OUTPUT"
+      - name: Push
+        env:
+          RAMA: ${{ steps.cambio.outputs.rama }}
+        run: git push origin "$RAMA"
+      - name: Abrir PR y ejecutar comprobaciones
+        env:
+          RAMA: ${{ steps.cambio.outputs.rama }}
+        run: |
+          pr=$(gh pr create --base main --head "$RAMA" --title "Propuesta de Gemini ($ORIGEN)" \
+            --body "Propuesta validada. Diagnóstico y diff: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$ORIGEN")
+          echo "PR pendiente de aprobación humana: $pr" >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run test.yml --ref "$RAMA"
+          gh workflow run contenedor.yml --ref "$RAMA"
+          gh workflow run analisis-ia.yml --ref "$RAMA" -f pr="${pr##*/}"
