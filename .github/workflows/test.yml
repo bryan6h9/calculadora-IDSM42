@@ -11,22 +11,33 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PROPUESTA: ${{ startsWith(github.head_ref || github.ref_name, 'gemini/correccion-') }}
 
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Instalar Python
+        if: env.PROPUESTA != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
       - name: Instalar dependencias
+        if: env.PROPUESTA != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
 
       - name: Ejecutar pruebas
+        if: env.PROPUESTA != 'true'
         run: |
           python -m pytest -v
+
+      - name: Ejecutar pruebas de código generado en Docker
+        if: env.PROPUESTA == 'true'
+        run: bash scripts/probar-propuesta-docker.sh

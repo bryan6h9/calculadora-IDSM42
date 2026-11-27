@@ -70,6 +70,9 @@ jobs:
           git switch -c "$rama"
           cp revision/propuesta.txt "$archivo"
           git add -- "$archivo"
+          fecha=$(git show -s --format=%aI "$GITHUB_SHA")
+          export GIT_AUTHOR_DATE="$fecha"
+          export GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
             commit -m "Propuesta de Gemini para $archivo"
           echo "rama=$rama" >> "$GITHUB_OUTPUT"
@@ -81,8 +84,15 @@ jobs:
         env:
           RAMA: ${{ steps.cambio.outputs.rama }}
         run: |
-          pr=$(gh pr create --base main --head "$RAMA" --title "Propuesta de Gemini ($ORIGEN)" \
-            --body "Propuesta validada. Diagnóstico y diff: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$ORIGEN")
+          existente=$(gh pr list --state all --base main --head "$RAMA" --limit 1 --json state,url)
+          case "$(jq -r '.[0].state // ""' <<< "$existente")" in
+            OPEN) pr=$(jq -er '.[0].url' <<< "$existente") ;;
+            "")
+              pr=$(gh pr create --base main --head "$RAMA" --title "Propuesta de Gemini ($ORIGEN)" \
+                --body "Propuesta validada. Diagnóstico y diff: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$ORIGEN")
+              ;;
+            *) echo "::error::El PR de esta propuesta ya se resolvió."; exit 1 ;;
+          esac
           echo "PR pendiente de aprobación humana: $pr" >> "$GITHUB_STEP_SUMMARY"
           gh workflow run test.yml --ref "$RAMA"
           gh workflow run contenedor.yml --ref "$RAMA"

@@ -212,6 +212,8 @@ def create_app():
                 abort(400, "Describe el cambio en 1 a 2000 caracteres.")
             inputs["solicitud"] = instruction.strip()
         if workflow == "publicar-propuesta.yml":
+            if os.getenv("PANEL_REF", "main") != "main":
+                abort(400, "El modo de demostración no publica propuestas.")
             source = data.get("origen")
             if type(source) is not int or source < 1:
                 abort(400, "Selecciona una ejecución de propuesta válida.")
