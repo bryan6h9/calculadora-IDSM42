@@ -10,7 +10,7 @@ def main():
         print("4. Dividir")
         print("5. Salir")
 
-        opcion = input("Selecciona una opción: ")
+        opcion = input("Selecciona una opción (1-5): ")
 
         if opcion == "5":
             print("Saliendo...")
