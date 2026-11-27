@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panel de automatización</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/panel.js" defer></script>
+</head>
+<body>
+<header><div><p id="repo">bryan6h9/calculadora-IDSM42</p><h1>Panel de automatización</h1></div><button id="refresh">Actualizar estado</button></header>
+<main>
+<p id="notice" role="status" aria-live="polite"></p>
+<section class="grid" aria-label="Acciones">
+<div class="card">
+<h2>Mantenimiento con Gemini</h2>
+<label for="archivo">Archivo</label>
+<select id="archivo"><option>index.html</option><option>calculadora.py</option><option>app.py</option></select>
+<label for="solicitud">Solicitud de corrección</label>
+<textarea id="solicitud" maxlength="2000" rows="3"></textarea>
+<label class="check"><input type="checkbox" id="simulacion" checked> Modo simulación</label>
+<div class="buttons">
+<button data-workflow="analisis-ia.yml">Analizar código con Gemini</button>
+<button class="primary" data-workflow="correccion-ia.yml">Proponer corrección</button>
+<button data-workflow="correccion-ia.yml" data-test>Solo probar propuesta</button>
+<button data-workflow="mantenimiento-ia.yml">Ejecutar mantenimiento IA</button>
+</div>
+</div>
+<div class="card">
+<h2>Integración y despliegue</h2>
+<label id="key-label" hidden for="panel-key">Clave local</label>
+<input id="panel-key" type="password" autocomplete="off" hidden>
+<div class="buttons">
+<button data-workflow="test.yml">Ejecutar pruebas</button>
+<button data-workflow="contenedor.yml">Construir / publicar Docker</button>
+<button data-workflow="deploy.yml">Desplegar GitHub Pages</button>
+<button data-workflow="main_practica-azure.yml">Desplegar Azure</button>
+<a href="#history">Ver historial</a>
+</div>
+<h3>Workflows</h3><ul id="workflows"></ul>
+</div>
+</section>
+<section class="card" id="details" hidden>
+<h2>Ejecución seleccionada</h2><div id="run"></div>
+<h3>Pasos del workflow</h3><ol id="steps"></ol><ul id="artifacts"></ul>
+<div id="proposal" hidden>
+<h3>Diagnóstico</h3><pre id="diagnosis"></pre>
+<h3>Cambio propuesto</h3><pre id="diff"></pre>
+</div>
+<div class="buttons"><button id="approve" hidden>Aprobar cambio y abrir PR</button><button id="discard" hidden>Rechazar propuesta</button></div>
+<form id="issue" hidden>
+<h3>Crear Issue desde un hallazgo</h3>
+<label for="issue-title">Título</label><input id="issue-title" required maxlength="150">
+<label for="issue-body">Descripción</label><textarea id="issue-body" required maxlength="7000" rows="4"></textarea>
+<button type="submit">Crear Issue</button>
+</form>
+</section>
+<section class="card" id="history"><h2>Historial de ejecuciones</h2><ul id="runs"></ul></section>
+<section class="card"><h2>Pull requests</h2><ul id="prs"></ul></section>
+</main>
+</body>
+</html>

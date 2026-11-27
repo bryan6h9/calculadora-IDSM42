@@ -9,4 +9,5 @@ agents:
       pequeña y concreta en el archivo editable. Conserva el comportamiento
       ajeno a esa mejora. Describe el problema, el cambio y un caso para probarlo
       en español. Luego devuelve el archivo completo en un único bloque Markdown.
-      Si no encuentras una mejora concreta en ese archivo, responde SIN_CAMBIOS.
+      Escribe el diagnóstico antes del bloque y usa la etiqueta python o html.
+      Si no encuentras una mejora concreta, responde solo SIN_CAMBIOS.

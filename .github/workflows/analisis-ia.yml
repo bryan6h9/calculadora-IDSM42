@@ -2,6 +2,14 @@ name: Analisis de codigo con Docker Agent
 
 on:
   workflow_dispatch:
+    inputs:
+      archivo:
+        type: choice
+        options: [index.html, calculadora.py, app.py]
+        default: calculadora.py
+      pr:
+        description: PR del repositorio que se debe revisar
+        type: string
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -16,6 +24,8 @@ concurrency:
 jobs:
   analizar:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    outputs:
+      sha: ${{ steps.revision.outputs.sha }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,14 +35,21 @@ jobs:
         with:
           persist-credentials: false
       - name: Preparar código para revisión
+        id: revision
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          ARCHIVO: ${{ inputs.archivo }}
         run: |
           if [[ -n "$PR" ]]; then
+            [[ "$PR" =~ ^[0-9]+$ ]]
+            sha=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
             gh pr diff "$PR" > revision.txt
+            test "$(gh pr view "$PR" --json headRefOid --jq .headRefOid)" = "$sha"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
           else
-            cp calculadora.py revision.txt
+            case "$ARCHIVO" in index.html|calculadora.py|app.py) ;; *) exit 1 ;; esac
+            cp "$ARCHIVO" revision.txt
           fi
           head -c 60000 revision.txt > entrada.txt
 
@@ -64,7 +81,7 @@ jobs:
           path: revision.md
 
   comentar:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || inputs.pr != ''
     needs: analizar
     runs-on: ubuntu-latest
     permissions:
@@ -77,11 +94,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ needs.analizar.outputs.sha }}
         run: |
           test "$(gh pr view "$PR" --json headRefOid --jq .headRefOid)" = "$HEAD_SHA"
           {
+            printf '<!-- gemini-revision:%s -->\n' "$HEAD_SHA"
             printf '### Revisión de Gemini\n\nCommit: %s\n\n' "$HEAD_SHA"
             sed -E 's/@([a-zA-Z0-9-]+)/@​\1/g' revision.md
           } > comentario.md
