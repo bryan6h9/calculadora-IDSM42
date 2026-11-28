@@ -79,3 +79,30 @@ empaquetado y el workflow de GHCR verifica el contenido servido por HTTP.
 python -m pip install pytest
 python -m pytest -v
 ```
+
+## Revisor de código desde Terminal
+
+Desde la carpeta de este repositorio:
+
+```bash
+python3 revisor.py
+```
+
+El revisor funciona con código de cualquier proyecto. Elige **1** para pegar
+un fragmento y termina con `:fin` en una línea aparte. Elige **2** para abrir
+un archivo de texto por su ruta, incluso si vive en otro proyecto.
+
+Elige **3** para analizar o **4** para pedir una corrección. Describe qué
+esperas, por ejemplo «Explica por qué falla con una lista vacía y propón el
+cambio mínimo». El menú muestra el diagnóstico y, cuando existe propuesta, la
+comparación con tu código actual. Con **6** haces otra ronda usando la
+propuesta en memoria. Antes de usarla, puedes guardarla con **7** en un archivo
+nuevo. La opción de guardar rechaza rutas que ya existen.
+
+Antes de consultar Gemini, el menú pide permiso para enviar el código activo
+y la instrucción a Google. Quita contraseñas, claves y datos privados de los
+fragmentos. La primera consulta pide tu
+[clave de Google AI Studio](https://aistudio.google.com/app/apikey) sin mostrarla
+en pantalla. También puedes usar la variable de entorno `GEMINI_API_KEY`.
+El modelo se puede cambiar con `GEMINI_MODEL`. El programa no necesita Flask,
+un token de GitHub ni ejecutar el código pegado.
